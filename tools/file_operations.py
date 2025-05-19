@@ -9,6 +9,8 @@ async def write_file(file_path: str, content: str) -> str:
     Path(file_path).write_text(content)
     return f"Written to {file_path}"
 
+
+
 FILE_TOOLS = [
     ToolDefinition(
         name="read_file",

@@ -1,6 +1,6 @@
 
 # tools/image_operations.py
-from base import ToolDefinition
+from .base import ToolDefinition
 from PIL import Image
 import io
 import base64
@@ -19,16 +19,18 @@ async def process_image(image_path: str, operation: str) -> str:
 IMAGE_TOOLS = [
     ToolDefinition(
         name="process_image",
-        description="Process an image file",
+        description="Process an image by resizing or converting to grayscale.",
         parameters={
             "image_path": {
                 "type": "string",
-                "description": "Path to image file"
+                "description": "Path to the image file",
+                "required": True
             },
             "operation": {
                 "type": "string",
-                "enum": ["resize", "grayscale"],
-                "description": "Operation to perform"
+                "description": "Operation to perform on the image (resize or grayscale)",
+                "required": True,
+                "enum": ["resize", "grayscale"]
             }
         },
         implementation=process_image
