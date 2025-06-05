@@ -4,7 +4,7 @@ import re
 from typing import List, Dict, Any, cast, Optional
 
 # Community-endorsed libraries
-from pydantic import BaseModel, Field
+from pydantic import BaseSettings, Field
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -18,28 +18,45 @@ from openai.types.chat import (
 )
 
 # Local project imports (assuming this script is in Ayyy-AI directory or Ayyy-AI is in PYTHONPATH)
-from tools.base import ToolRegistry # From Ayyy-AI/tools/base.py
-from tools.file_operations import FILE_TOOLS       # From Ayyy-AI/tools/file_operations.py
+from tools import initialize_tool_registry
+from conversation_store import load_history, save_history
 
 # Initialize Rich Console
 console = Console()
 
-class AppConfig(BaseModel):
-    base_url: str = Field(default="http://localhost:1234/v1", description="LLM API base URL")
-    api_key: str = Field(default="lm-studio-key", description="LLM API key (often optional for local LLMs)")
-    model: str = Field(default="qwen2.5-vl-7b-instruct", description="LLM model identifier")
-    request_timeout: float = Field(default=120.0, description="API request timeout in seconds")
+class AppConfig(BaseSettings):
+    base_url: str = Field(
+        default="http://localhost:1234/v1",
+        description="LLM API base URL",
+        env="AYYY_BASE_URL",
+    )
+    api_key: str = Field(
+        default="lm-studio-key",
+        description="LLM API key (often optional for local LLMs)",
+        env="AYYY_API_KEY",
+    )
+    model: str = Field(
+        default="qwen2.5-vl-7b-instruct",
+        description="LLM model identifier",
+        env="AYYY_MODEL",
+    )
+    request_timeout: float = Field(
+        default=120.0,
+        description="API request timeout in seconds",
+        env="AYYY_TIMEOUT",
+    )
+    history_file: str = Field(
+        default="chat_history.json",
+        description="Path to save conversation history",
+        env="AYYY_HISTORY_FILE",
+    )
 
 class AgileToolExecutor:
-    def __init__(self):
-        self.registry = ToolRegistry()
-        self._load_tools()
-
-    def _load_tools(self) -> None:
-        """Directly load tools from defined lists."""
-        for tool_def in FILE_TOOLS: # FILE_TOOLS is List[ToolDefinition]
-            self.registry.register(tool_def)
-        console.log(f"Tools loaded: [cyan]{', '.join(self.registry._tools.keys())}[/cyan]")
+    def __init__(self) -> None:
+        self.registry = initialize_tool_registry()
+        console.log(
+            f"Tools loaded: [cyan]{', '.join(self.registry._tools.keys()) or 'none'}[/cyan]"
+        )
 
     @property
     def tool_schemas(self) -> List[ChatCompletionToolParam]:
@@ -75,25 +92,29 @@ class ModernChatAssistant:
             timeout=config.request_timeout,
         )
         self.tool_executor = AgileToolExecutor()
-        self.messages: List[Dict[str, Any]] = []  # Store chat messages
+        self.messages: List[Dict[str, Any]] = load_history(config.history_file)
+        if not self.messages:
+            self.messages.append({
+                "role": "system",
+                "content": (
+                    "You are a highly capable assistant. For complex requests, first create a step-by-step plan. "
+                    "Output the plan as a JSON object in your response content if you decide a plan is needed, like this: "
+                    '```json\n{"plan": [{"step_id": 1, "goal": "Describe the goal for this step", "tool_suggestion": "relevant_tool_name_or_null_if_none"}, ...]}\n```\n'
+                    "Then, I will help you execute it. For simpler tasks, you can respond directly or use tools immediately. "
+                    "You can use available tools to answer questions and solve problems."
+                )
+            })
+            save_history(self.config.history_file, self.messages)
         
         # New state variables for planning
         self.global_objective: str | None = None
         self.current_plan: List[Dict[str, Any]] | None = None
         self.current_step_index: int = 0
         self.pending_error_info: Optional[Dict[str, Any]] = None # For handling tool errors
+
+    def _save_history(self) -> None:
+        save_history(self.config.history_file, self.messages)
         
-        # Add default system message
-        self.messages.append({
-            "role": "system",
-            "content": (
-                "You are a highly capable assistant. For complex requests, first create a step-by-step plan. "
-                "Output the plan as a JSON object in your response content if you decide a plan is needed, like this: "
-                '```json\n{"plan": [{"step_id": 1, "goal": "Describe the goal for this step", "tool_suggestion": "relevant_tool_name_or_null_if_none"}, ...]}\n```\n'
-                "Then, I will help you execute it. For simpler tasks, you can respond directly or use tools immediately. "
-                "You can use available tools to answer questions and solve problems."
-            )
-        })
         
     async def _get_llm_response(self, messages_override: List[Dict[str, Any]] | None = None) -> ChatCompletionMessage | None:
         tool_schemas = self.tool_executor.tool_schemas
@@ -121,6 +142,7 @@ class ModernChatAssistant:
 
     async def process_turn(self, user_input: str):
         self.messages.append({"role": "user", "content": user_input})
+        self._save_history()
         self.global_objective = user_input
         
         # For a new user turn, always reset the plan.
@@ -234,6 +256,7 @@ class ModernChatAssistant:
                     for tc in llm_response_message.tool_calls]
             
             self.messages.append(assistant_message_for_history)
+            self._save_history()
             if assistant_message_for_history["content"]:
                  console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
 
@@ -278,6 +301,7 @@ class ModernChatAssistant:
                         "role": "tool", "tool_call_id": tool_call_id, "content": tool_content_for_history})
                 
                 self.messages.extend(tool_message_batch_for_history)
+                self._save_history()
 
                 if not all_tool_calls_successful_this_round and self.pending_error_info:
                     console.print("[bold red]Tool call failed. Will ask LLM for guidance in the next iteration.[/bold red]")
@@ -328,6 +352,7 @@ class ModernChatAssistant:
         
         self.global_objective = None
         self.pending_error_info = None # Final cleanup at the end of the entire turn processing.
+        self._save_history()
 
     async def run_interactive_session(self):
         console.print(Panel(
