@@ -6,8 +6,9 @@ try:
 except Exception:
     SYSTEM_TOOLS = []
 
+# Web-related tools (e.g., fetching URLs). Older versions expected browser_tools.
 try:
-    from .browser_tools import WEB_TOOLS
+    from .web_operations import WEB_TOOLS
 except Exception:
     WEB_TOOLS = []
 

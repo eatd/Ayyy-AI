@@ -31,3 +31,11 @@ These variables are optional but allow quick configuration changes without editi
 
 If `mem0` and `sentence-transformers` are installed, additional memory-related
 tools will be available for storing and retrieving information between sessions.
+
+### Web Tools
+
+A basic `fetch_url` tool allows retrieving the contents of a web page. Network access must be available for this tool to function.
+
+### Conversation History
+
+The assistant saves conversation history to `chat_history.json` by default. Set the `AYYY_HISTORY_FILE` environment variable to change the path or delete the file to start fresh.
