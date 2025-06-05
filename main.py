@@ -1,10 +1,13 @@
 import asyncio
 import json
+import os
 import re
+from pathlib import Path
 from typing import List, Dict, Any, cast, Optional
 
 # Community-endorsed libraries
 from pydantic import BaseSettings, Field
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -20,9 +23,11 @@ from openai.types.chat import (
 # Local project imports (assuming this script is in Ayyy-AI directory or Ayyy-AI is in PYTHONPATH)
 from tools import initialize_tool_registry
 from conversation_store import load_history, save_history
+from utils import get_logger
 
 # Initialize Rich Console
 console = Console()
+logger = get_logger(__name__)
 
 class AppConfig(BaseSettings):
     base_url: str = Field(
@@ -50,6 +55,20 @@ class AppConfig(BaseSettings):
         description="Path to save conversation history",
         env="AYYY_HISTORY_FILE",
     )
+    config_file: Optional[str] = Field(
+        default=None,
+        description="Path to optional YAML config file",
+        env="AYYY_CONFIG_FILE",
+    )
+
+    @classmethod
+    def load(cls) -> "AppConfig":
+        cfg_path = os.getenv("AYYY_CONFIG_FILE")
+        if cfg_path and Path(cfg_path).exists():
+            with open(cfg_path, "r") as fh:
+                data = yaml.safe_load(fh) or {}
+            return cls(**data)
+        return cls()
 
 class AgileToolExecutor:
     def __init__(self) -> None:
@@ -387,7 +406,8 @@ class ModernChatAssistant:
 
 async def main_async():
     try:
-        app_config = AppConfig() # Pydantic will load from ENV or use defaults
+        app_config = AppConfig.load()
+        logger.info("Configuration loaded")
         # console.print(Panel(app_config.model_dump_json(indent=2), title="[bold green]Configuration[/bold green]"))
     except Exception as e: # Catch Pydantic validation errors if any
         console.print(f"[Config Error] Could not load configuration: {e}", style="bold red")
