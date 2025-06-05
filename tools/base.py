@@ -46,15 +46,13 @@ class ToolRegistry:
     
     
     def register(self, tool: ToolDefinition) -> None:
-        """
-        Register a new tool definition.
-        If a tool with the same name already exists, it will log a warning and skip registration.
-        """
+        """Register a new tool definition."""
         self.logger.info(f"Registering tool: {tool.name}")
+        if tool.name in self._tools:
+            self.logger.warning(f"Tool '{tool.name}' is already registered. Skipping.")
+            return
         tool.required_fields = [k for k, v in tool.parameters.items() if v.get("required", True)]
         self._tools[tool.name] = tool
-        self.logger.warning(f"Tool '{tool.name}' is already registered. Registration skipped.")
-        return
 
 
     def get_lm_studio_schemas(self) -> List[Dict[str, Any]]:
@@ -76,13 +74,12 @@ class ToolRegistry:
         
     
     async def execute(self, name: str, **kwargs) -> Any:
-        # Execute async and sync implementations
+        """Execute a registered tool by name."""
         tool = self._tools.get(name)
         if not tool:
-            if callable(tool.implementation):
-                if asyncio.iscoroutinefunction(tool.implementation):
-                    return await tool.implementation(**kwargs)
-                return tool.implementation(**kwargs)
-            raise ValueError(f"Implementation for tool '{name}' is not callable")
-        
-        return await tool.implementation(**kwargs)
+            raise ValueError(f"Tool '{name}' is not registered")
+
+        impl = tool.implementation
+        if asyncio.iscoroutinefunction(impl):
+            return await impl(**kwargs)
+        return impl(**kwargs)

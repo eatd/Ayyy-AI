@@ -18,8 +18,7 @@ from openai.types.chat import (
 )
 
 # Local project imports (assuming this script is in Ayyy-AI directory or Ayyy-AI is in PYTHONPATH)
-from tools.base import ToolRegistry # From Ayyy-AI/tools/base.py
-from tools.file_operations import FILE_TOOLS       # From Ayyy-AI/tools/file_operations.py
+from tools import initialize_tool_registry
 
 # Initialize Rich Console
 console = Console()
@@ -31,15 +30,11 @@ class AppConfig(BaseModel):
     request_timeout: float = Field(default=120.0, description="API request timeout in seconds")
 
 class AgileToolExecutor:
-    def __init__(self):
-        self.registry = ToolRegistry()
-        self._load_tools()
-
-    def _load_tools(self) -> None:
-        """Directly load tools from defined lists."""
-        for tool_def in FILE_TOOLS: # FILE_TOOLS is List[ToolDefinition]
-            self.registry.register(tool_def)
-        console.log(f"Tools loaded: [cyan]{', '.join(self.registry._tools.keys())}[/cyan]")
+    def __init__(self) -> None:
+        self.registry = initialize_tool_registry()
+        console.log(
+            f"Tools loaded: [cyan]{', '.join(self.registry._tools.keys()) or 'none'}[/cyan]"
+        )
 
     @property
     def tool_schemas(self) -> List[ChatCompletionToolParam]:

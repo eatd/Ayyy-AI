@@ -214,7 +214,7 @@ async def mem0_update(memory_id: str, content: str, metadata: Optional[Dict[str,
     except Exception as e:
         return f"Error updating memory: {str(e)}"
 
-async def mem0_init(storage_path: str = "./memory_store", 
+async def mem0_init(storage_path: str = "./memory_store",
                    api_base: str = "http://localhost:1234/v1",
                    model_name: str = "gpt-3.5-turbo",
                    use_local_embeddings: bool = True) -> str:
@@ -231,3 +231,81 @@ async def mem0_init(storage_path: str = "./memory_store",
         return f"Memory system initialized with storage at {storage_path}, using {model_name} via {api_base}."
     except Exception as e:
         return f"Error initializing memory system: {str(e)}"
+
+
+# Expose tool definitions for registry initialization
+DATABASE_TOOLS = [
+    ToolDefinition(
+        name="mem0_add",
+        description="Add a memory entry to mem0",
+        parameters={
+            "content": {"type": "string", "description": "Memory text"},
+            "metadata": {"type": "object", "description": "Optional metadata", "required": False},
+        },
+        implementation=mem0_add,
+    ),
+    ToolDefinition(
+        name="mem0_retrieve",
+        description="Retrieve memories matching a query",
+        parameters={
+            "query": {"type": "string", "description": "Search query"},
+            "limit": {"type": "integer", "description": "Number of results", "required": False},
+        },
+        implementation=mem0_retrieve,
+    ),
+    ToolDefinition(
+        name="mem0_retrieve_by_id",
+        description="Retrieve a memory by ID",
+        parameters={"memory_id": {"type": "string", "description": "Memory ID"}},
+        implementation=mem0_retrieve_by_id,
+    ),
+    ToolDefinition(
+        name="mem0_summarize",
+        description="Summarize stored memories",
+        parameters={"query": {"type": "string", "description": "Filter query", "required": False}},
+        implementation=mem0_summarize,
+    ),
+    ToolDefinition(
+        name="mem0_search_by_metadata",
+        description="Search memories via metadata field",
+        parameters={
+            "key": {"type": "string", "description": "Metadata key"},
+            "value": {"type": "string", "description": "Metadata value"},
+            "limit": {"type": "integer", "description": "Result limit", "required": False},
+        },
+        implementation=mem0_search_by_metadata,
+    ),
+    ToolDefinition(
+        name="mem0_clear",
+        description="Clear all memories",
+        parameters={},
+        implementation=mem0_clear,
+    ),
+    ToolDefinition(
+        name="mem0_delete",
+        description="Delete memory by ID",
+        parameters={"memory_id": {"type": "string", "description": "Memory ID"}},
+        implementation=mem0_delete,
+    ),
+    ToolDefinition(
+        name="mem0_update",
+        description="Update an existing memory entry",
+        parameters={
+            "memory_id": {"type": "string", "description": "Memory ID"},
+            "content": {"type": "string", "description": "New content"},
+            "metadata": {"type": "object", "description": "Metadata", "required": False},
+        },
+        implementation=mem0_update,
+    ),
+    ToolDefinition(
+        name="mem0_init",
+        description="Initialize the mem0 system",
+        parameters={
+            "storage_path": {"type": "string", "description": "Storage directory", "required": False},
+            "api_base": {"type": "string", "description": "API base URL", "required": False},
+            "model_name": {"type": "string", "description": "Model name", "required": False},
+            "use_local_embeddings": {"type": "boolean", "description": "Use local embeddings", "required": False},
+        },
+        implementation=mem0_init,
+    ),
+]
