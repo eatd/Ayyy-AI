@@ -4,7 +4,7 @@ import re
 from typing import List, Dict, Any, cast, Optional
 
 # Community-endorsed libraries
-from pydantic import BaseModel, Field
+from pydantic import BaseSettings, Field
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -23,11 +23,27 @@ from tools import initialize_tool_registry
 # Initialize Rich Console
 console = Console()
 
-class AppConfig(BaseModel):
-    base_url: str = Field(default="http://localhost:1234/v1", description="LLM API base URL")
-    api_key: str = Field(default="lm-studio-key", description="LLM API key (often optional for local LLMs)")
-    model: str = Field(default="qwen2.5-vl-7b-instruct", description="LLM model identifier")
-    request_timeout: float = Field(default=120.0, description="API request timeout in seconds")
+class AppConfig(BaseSettings):
+    base_url: str = Field(
+        default="http://localhost:1234/v1",
+        description="LLM API base URL",
+        env="AYYY_BASE_URL",
+    )
+    api_key: str = Field(
+        default="lm-studio-key",
+        description="LLM API key (often optional for local LLMs)",
+        env="AYYY_API_KEY",
+    )
+    model: str = Field(
+        default="qwen2.5-vl-7b-instruct",
+        description="LLM model identifier",
+        env="AYYY_MODEL",
+    )
+    request_timeout: float = Field(
+        default=120.0,
+        description="API request timeout in seconds",
+        env="AYYY_TIMEOUT",
+    )
 
 class AgileToolExecutor:
     def __init__(self) -> None:

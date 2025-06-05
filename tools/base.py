@@ -41,7 +41,8 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolDefinition] = {}
         self.logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.INFO)
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(level=logging.INFO)
         self.logger.info("ToolRegistry initialized")
     
     
@@ -59,18 +60,22 @@ class ToolRegistry:
         """
         Get the schemas for all registered tools in a format compatible with LM Studio.
         """
-        return [{
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                    "properties": tool.parameters,
-                    "required": [k for k, v in tool.parameters.items() 
-                                if v.get("required", True)]
-                }
+        schemas = []
+        for tool in self._tools.values():
+            schema = {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": tool.parameters,
+                        "required": tool.required_fields or [],
+                    },
+                },
             }
-            for tool in self._tools.values()
-        ]
+            schemas.append(schema)
+        return schemas
         
     
     async def execute(self, name: str, **kwargs) -> Any:
@@ -78,6 +83,12 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if not tool:
             raise ValueError(f"Tool '{name}' is not registered")
+
+        missing = [field for field in tool.required_fields or [] if field not in kwargs]
+        if missing:
+            raise ValueError(
+                f"Missing required arguments for '{name}': {', '.join(missing)}"
+            )
 
         impl = tool.implementation
         if asyncio.iscoroutinefunction(impl):

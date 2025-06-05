@@ -15,7 +15,17 @@ pip install -r requirements.txt
 python main.py
 ```
 
-The assistant will load any available tools and start an interactive session.
+The assistant will automatically load available tools and start an interactive session.
+
+Environment variables can override the defaults in `AppConfig`:
+
+```
+AYYY_BASE_URL=http://localhost:1234/v1
+AYYY_API_KEY=lm-studio-key
+AYYY_MODEL=qwen2.5-vl-7b-instruct
+```
+
+These variables are optional but allow quick configuration changes without editing code.
 
 ### Memory Tools
 

@@ -9,7 +9,9 @@ def log_execution(func: Callable) -> Callable:
     @wraps(func)
     def wrapper(*args, **kwargs):
         logger = logging.getLogger(func.__module__)
-        logger.info(f"Executing {func.__name__} with args: {args}, kwargs: {kwargs}")
+        logger.info(
+            f"Executing {func.__name__} with args: {args}, kwargs: {kwargs}"
+        )
         result = func(*args, **kwargs)
         logger.info(f"{func.__name__} completed with result: {result}")
         return result
@@ -50,5 +52,3 @@ def validate_json(data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
         return data
     else:
         raise TypeError("Data must be a JSON string or a dictionary.")
-    
-    
