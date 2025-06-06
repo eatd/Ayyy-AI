@@ -23,9 +23,11 @@ Environment variables can override the defaults in `AppConfig`:
 AYYY_BASE_URL=http://localhost:1234/v1
 AYYY_API_KEY=lm-studio-key
 AYYY_MODEL=qwen2.5-vl-7b-instruct
+AYYY_CONFIG_FILE=./config.yaml
 ```
 
 These variables are optional but allow quick configuration changes without editing code.
+If `AYYY_CONFIG_FILE` points to a YAML file, settings in that file override defaults.
 
 ### Memory Tools
 
@@ -35,6 +37,10 @@ tools will be available for storing and retrieving information between sessions.
 ### Web Tools
 
 A basic `fetch_url` tool allows retrieving the contents of a web page. Network access must be available for this tool to function.
+
+### System Tools
+
+`run_command` executes shell commands with an optional timeout. Use with care.
 
 ### Conversation History
 
