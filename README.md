@@ -40,7 +40,8 @@ A basic `fetch_url` tool allows retrieving the contents of a web page. Network a
 
 ### System Tools
 
-`run_command` executes shell commands with an optional timeout. `run_python` runs arbitrary Python code in a sandboxed subprocess. Use with care.
+`run_command` executes shell commands with an optional timeout. Use with care.
+
 
 ### Conversation History
 

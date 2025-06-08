@@ -298,8 +298,10 @@ class ModernChatAssistant:
             
             self.messages.append(assistant_message_for_history)
             self._save_history()
+
             if assistant_message_for_history["content"] and not stream_mode:
                 console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
+
 
             if llm_response_message.tool_calls:
                 console.print("[bold yellow]Tool Calls Detected:[/bold yellow]")
