@@ -42,6 +42,7 @@ A basic `fetch_url` tool allows retrieving the contents of a web page. Network a
 
 `run_command` executes shell commands with an optional timeout. Use with care.
 
+
 ### Conversation History
 
 The assistant saves conversation history to `chat_history.json` by default. Set the `AYYY_HISTORY_FILE` environment variable to change the path or delete the file to start fresh.

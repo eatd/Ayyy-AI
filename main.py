@@ -135,7 +135,7 @@ class ModernChatAssistant:
         save_history(self.config.history_file, self.messages)
         
         
-    async def _get_llm_response(self, messages_override: List[Dict[str, Any]] | None = None) -> ChatCompletionMessage | None:
+    async def _get_llm_response(self, messages_override: List[Dict[str, Any]] | None = None, *, stream: bool = False) -> ChatCompletionMessage | None:
         tool_schemas = self.tool_executor.tool_schemas
         
         messages_to_send = messages_override if messages_override is not None else self.messages
@@ -149,9 +149,30 @@ class ModernChatAssistant:
             api_params["tool_choice"] = "auto" # Let the LLM decide
 
         try:
-            # console.print(f"DEBUG: Sending messages to LLM: {json.dumps(messages_to_send, indent=2)}", style="dim") # DEBUG
-            response = await self.client.chat.completions.create(**api_params)
-            return response.choices[0].message
+            if stream:
+                response_stream = await self.client.chat.completions.create(stream=True, **api_params)
+                final_message = {"role": "assistant", "content": "", "tool_calls": []}
+                async for chunk in response_stream:
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if delta.content:
+                        console.print(delta.content, end="", style="bold green")
+                        final_message["content"] += delta.content
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = int(tc.index)
+                            while len(final_message["tool_calls"]) <= idx:
+                                final_message["tool_calls"].append({"id": tc.id, "function": {"name": "", "arguments": ""}})
+                            entry = final_message["tool_calls"][idx]
+                            if tc.function.name:
+                                entry["function"]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                entry["function"]["arguments"] += tc.function.arguments
+                console.print()
+                return ChatCompletionMessage(**final_message)
+            else:
+                response = await self.client.chat.completions.create(**api_params)
+                return response.choices[0].message
         except APIError as e:
             console.print(f"[LLM API Error] Request failed: {e}", style="bold red")
             return None
@@ -213,7 +234,8 @@ class ModernChatAssistant:
             else: # No plan yet
                 console.print("[bold blue]No active plan. LLM will decide on action (generate plan, use tool, or respond).[/bold blue]")
 
-            llm_response_message = await self._get_llm_response(messages_override=current_llm_messages_for_api_call)
+            stream_mode = True
+            llm_response_message = await self._get_llm_response(messages_override=current_llm_messages_for_api_call, stream=stream_mode)
 
             if llm_response_message is None:
                 if self.messages and self.messages[-1]["role"] == "user":
@@ -276,8 +298,10 @@ class ModernChatAssistant:
             
             self.messages.append(assistant_message_for_history)
             self._save_history()
-            if assistant_message_for_history["content"]:
-                 console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
+
+            if assistant_message_for_history["content"] and not stream_mode:
+                console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
+
 
             if llm_response_message.tool_calls:
                 console.print("[bold yellow]Tool Calls Detected:[/bold yellow]")
