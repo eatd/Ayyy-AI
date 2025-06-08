@@ -1,10 +1,13 @@
 import asyncio
 import json
+import os
 import re
+from pathlib import Path
 from typing import List, Dict, Any, cast, Optional
 
 # Community-endorsed libraries
-from pydantic import BaseModel, Field
+from pydantic import BaseSettings, Field
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -18,28 +21,61 @@ from openai.types.chat import (
 )
 
 # Local project imports (assuming this script is in Ayyy-AI directory or Ayyy-AI is in PYTHONPATH)
-from tools.base import ToolRegistry # From Ayyy-AI/tools/base.py
-from tools.file_operations import FILE_TOOLS       # From Ayyy-AI/tools/file_operations.py
+from tools import initialize_tool_registry
+from conversation_store import load_history, save_history
+from utils import get_logger
 
 # Initialize Rich Console
 console = Console()
+logger = get_logger(__name__)
 
-class AppConfig(BaseModel):
-    base_url: str = Field(default="http://localhost:1234/v1", description="LLM API base URL")
-    api_key: str = Field(default="lm-studio-key", description="LLM API key (often optional for local LLMs)")
-    model: str = Field(default="qwen2.5-vl-7b-instruct", description="LLM model identifier")
-    request_timeout: float = Field(default=120.0, description="API request timeout in seconds")
+class AppConfig(BaseSettings):
+    base_url: str = Field(
+        default="http://localhost:1234/v1",
+        description="LLM API base URL",
+        env="AYYY_BASE_URL",
+    )
+    api_key: str = Field(
+        default="lm-studio-key",
+        description="LLM API key (often optional for local LLMs)",
+        env="AYYY_API_KEY",
+    )
+    model: str = Field(
+        default="qwen2.5-vl-7b-instruct",
+        description="LLM model identifier",
+        env="AYYY_MODEL",
+    )
+    request_timeout: float = Field(
+        default=120.0,
+        description="API request timeout in seconds",
+        env="AYYY_TIMEOUT",
+    )
+    history_file: str = Field(
+        default="chat_history.json",
+        description="Path to save conversation history",
+        env="AYYY_HISTORY_FILE",
+    )
+    config_file: Optional[str] = Field(
+        default=None,
+        description="Path to optional YAML config file",
+        env="AYYY_CONFIG_FILE",
+    )
+
+    @classmethod
+    def load(cls) -> "AppConfig":
+        cfg_path = os.getenv("AYYY_CONFIG_FILE")
+        if cfg_path and Path(cfg_path).exists():
+            with open(cfg_path, "r") as fh:
+                data = yaml.safe_load(fh) or {}
+            return cls(**data)
+        return cls()
 
 class AgileToolExecutor:
-    def __init__(self):
-        self.registry = ToolRegistry()
-        self._load_tools()
-
-    def _load_tools(self) -> None:
-        """Directly load tools from defined lists."""
-        for tool_def in FILE_TOOLS: # FILE_TOOLS is List[ToolDefinition]
-            self.registry.register(tool_def)
-        console.log(f"Tools loaded: [cyan]{', '.join(self.registry._tools.keys())}[/cyan]")
+    def __init__(self) -> None:
+        self.registry = initialize_tool_registry()
+        console.log(
+            f"Tools loaded: [cyan]{', '.join(self.registry._tools.keys()) or 'none'}[/cyan]"
+        )
 
     @property
     def tool_schemas(self) -> List[ChatCompletionToolParam]:
@@ -75,27 +111,31 @@ class ModernChatAssistant:
             timeout=config.request_timeout,
         )
         self.tool_executor = AgileToolExecutor()
-        self.messages: List[Dict[str, Any]] = []  # Store chat messages
+        self.messages: List[Dict[str, Any]] = load_history(config.history_file)
+        if not self.messages:
+            self.messages.append({
+                "role": "system",
+                "content": (
+                    "You are a highly capable assistant. For complex requests, first create a step-by-step plan. "
+                    "Output the plan as a JSON object in your response content if you decide a plan is needed, like this: "
+                    '```json\n{"plan": [{"step_id": 1, "goal": "Describe the goal for this step", "tool_suggestion": "relevant_tool_name_or_null_if_none"}, ...]}\n```\n'
+                    "Then, I will help you execute it. For simpler tasks, you can respond directly or use tools immediately. "
+                    "You can use available tools to answer questions and solve problems."
+                )
+            })
+            save_history(self.config.history_file, self.messages)
         
         # New state variables for planning
         self.global_objective: str | None = None
         self.current_plan: List[Dict[str, Any]] | None = None
         self.current_step_index: int = 0
         self.pending_error_info: Optional[Dict[str, Any]] = None # For handling tool errors
+
+    def _save_history(self) -> None:
+        save_history(self.config.history_file, self.messages)
         
-        # Add default system message
-        self.messages.append({
-            "role": "system",
-            "content": (
-                "You are a highly capable assistant. For complex requests, first create a step-by-step plan. "
-                "Output the plan as a JSON object in your response content if you decide a plan is needed, like this: "
-                '```json\n{"plan": [{"step_id": 1, "goal": "Describe the goal for this step", "tool_suggestion": "relevant_tool_name_or_null_if_none"}, ...]}\n```\n'
-                "Then, I will help you execute it. For simpler tasks, you can respond directly or use tools immediately. "
-                "You can use available tools to answer questions and solve problems."
-            )
-        })
         
-    async def _get_llm_response(self, messages_override: List[Dict[str, Any]] | None = None) -> ChatCompletionMessage | None:
+    async def _get_llm_response(self, messages_override: List[Dict[str, Any]] | None = None, *, stream: bool = False) -> ChatCompletionMessage | None:
         tool_schemas = self.tool_executor.tool_schemas
         
         messages_to_send = messages_override if messages_override is not None else self.messages
@@ -109,9 +149,30 @@ class ModernChatAssistant:
             api_params["tool_choice"] = "auto" # Let the LLM decide
 
         try:
-            # console.print(f"DEBUG: Sending messages to LLM: {json.dumps(messages_to_send, indent=2)}", style="dim") # DEBUG
-            response = await self.client.chat.completions.create(**api_params)
-            return response.choices[0].message
+            if stream:
+                response_stream = await self.client.chat.completions.create(stream=True, **api_params)
+                final_message = {"role": "assistant", "content": "", "tool_calls": []}
+                async for chunk in response_stream:
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if delta.content:
+                        console.print(delta.content, end="", style="bold green")
+                        final_message["content"] += delta.content
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = int(tc.index)
+                            while len(final_message["tool_calls"]) <= idx:
+                                final_message["tool_calls"].append({"id": tc.id, "function": {"name": "", "arguments": ""}})
+                            entry = final_message["tool_calls"][idx]
+                            if tc.function.name:
+                                entry["function"]["name"] = tc.function.name
+                            if tc.function.arguments:
+                                entry["function"]["arguments"] += tc.function.arguments
+                console.print()
+                return ChatCompletionMessage(**final_message)
+            else:
+                response = await self.client.chat.completions.create(**api_params)
+                return response.choices[0].message
         except APIError as e:
             console.print(f"[LLM API Error] Request failed: {e}", style="bold red")
             return None
@@ -121,6 +182,7 @@ class ModernChatAssistant:
 
     async def process_turn(self, user_input: str):
         self.messages.append({"role": "user", "content": user_input})
+        self._save_history()
         self.global_objective = user_input
         
         # For a new user turn, always reset the plan.
@@ -172,7 +234,8 @@ class ModernChatAssistant:
             else: # No plan yet
                 console.print("[bold blue]No active plan. LLM will decide on action (generate plan, use tool, or respond).[/bold blue]")
 
-            llm_response_message = await self._get_llm_response(messages_override=current_llm_messages_for_api_call)
+            stream_mode = True
+            llm_response_message = await self._get_llm_response(messages_override=current_llm_messages_for_api_call, stream=stream_mode)
 
             if llm_response_message is None:
                 if self.messages and self.messages[-1]["role"] == "user":
@@ -234,8 +297,9 @@ class ModernChatAssistant:
                     for tc in llm_response_message.tool_calls]
             
             self.messages.append(assistant_message_for_history)
-            if assistant_message_for_history["content"]:
-                 console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
+            self._save_history()
+            if assistant_message_for_history["content"] and not stream_mode:
+                console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
 
             if llm_response_message.tool_calls:
                 console.print("[bold yellow]Tool Calls Detected:[/bold yellow]")
@@ -278,6 +342,7 @@ class ModernChatAssistant:
                         "role": "tool", "tool_call_id": tool_call_id, "content": tool_content_for_history})
                 
                 self.messages.extend(tool_message_batch_for_history)
+                self._save_history()
 
                 if not all_tool_calls_successful_this_round and self.pending_error_info:
                     console.print("[bold red]Tool call failed. Will ask LLM for guidance in the next iteration.[/bold red]")
@@ -328,6 +393,7 @@ class ModernChatAssistant:
         
         self.global_objective = None
         self.pending_error_info = None # Final cleanup at the end of the entire turn processing.
+        self._save_history()
 
     async def run_interactive_session(self):
         console.print(Panel(
@@ -362,7 +428,8 @@ class ModernChatAssistant:
 
 async def main_async():
     try:
-        app_config = AppConfig() # Pydantic will load from ENV or use defaults
+        app_config = AppConfig.load()
+        logger.info("Configuration loaded")
         # console.print(Panel(app_config.model_dump_json(indent=2), title="[bold green]Configuration[/bold green]"))
     except Exception as e: # Catch Pydantic validation errors if any
         console.print(f"[Config Error] Could not load configuration: {e}", style="bold red")

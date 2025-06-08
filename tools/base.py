@@ -41,48 +41,56 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolDefinition] = {}
         self.logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.INFO)
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(level=logging.INFO)
         self.logger.info("ToolRegistry initialized")
     
     
     def register(self, tool: ToolDefinition) -> None:
-        """
-        Register a new tool definition.
-        If a tool with the same name already exists, it will log a warning and skip registration.
-        """
+        """Register a new tool definition."""
         self.logger.info(f"Registering tool: {tool.name}")
+        if tool.name in self._tools:
+            self.logger.warning(f"Tool '{tool.name}' is already registered. Skipping.")
+            return
         tool.required_fields = [k for k, v in tool.parameters.items() if v.get("required", True)]
         self._tools[tool.name] = tool
-        self.logger.warning(f"Tool '{tool.name}' is already registered. Registration skipped.")
-        return
 
 
     def get_lm_studio_schemas(self) -> List[Dict[str, Any]]:
         """
         Get the schemas for all registered tools in a format compatible with LM Studio.
         """
-        return [{
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                    "properties": tool.parameters,
-                    "required": [k for k, v in tool.parameters.items() 
-                                if v.get("required", True)]
-                }
+        schemas = []
+        for tool in self._tools.values():
+            schema = {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": tool.parameters,
+                        "required": tool.required_fields or [],
+                    },
+                },
             }
-            for tool in self._tools.values()
-        ]
+            schemas.append(schema)
+        return schemas
         
     
     async def execute(self, name: str, **kwargs) -> Any:
-        # Execute async and sync implementations
+        """Execute a registered tool by name."""
         tool = self._tools.get(name)
         if not tool:
-            if callable(tool.implementation):
-                if asyncio.iscoroutinefunction(tool.implementation):
-                    return await tool.implementation(**kwargs)
-                return tool.implementation(**kwargs)
-            raise ValueError(f"Implementation for tool '{name}' is not callable")
-        
-        return await tool.implementation(**kwargs)
+            raise ValueError(f"Tool '{name}' is not registered")
+
+        missing = [field for field in tool.required_fields or [] if field not in kwargs]
+        if missing:
+            raise ValueError(
+                f"Missing required arguments for '{name}': {', '.join(missing)}"
+            )
+
+        impl = tool.implementation
+        if asyncio.iscoroutinefunction(impl):
+            return await impl(**kwargs)
+        return impl(**kwargs)
