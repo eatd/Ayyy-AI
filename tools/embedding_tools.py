@@ -1,305 +1,207 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 import os
 import asyncio
 from datetime import datetime
 
-# Import mem0 components
-from mem0.async_memory import AsyncMemory
-from mem0.embeddings import OpenAIEmbeddingModel, CustomEmbeddingModel
-from mem0.llm import OpenAILLM
-from mem0.storage import ChromaVectorStore
+from .base import ToolDefinition
 
+# Check for optional dependencies
+MEM0_AVAILABLE = False
+SENTENCE_TRANSFORMERS_AVAILABLE = False
 
-# Import sentence-transformers for local embeddings option
 try:
     from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     pass
 
-# Tool definition structure that matches your existing system
-class ToolDefinition:
-    def __init__(self, name, description, parameters, implementation):
-        self.name = name
-        self.description = description
-        self.parameters = parameters
-        self.implementation = implementation
+try:
+    # Import mem0 components (if available)
+    from mem0.async_memory import AsyncMemory
+    from mem0.embeddings import OpenAIEmbeddingModel, CustomEmbeddingModel
+    from mem0.llm import OpenAILLM
+    from mem0.storage import ChromaVectorStore
+    MEM0_AVAILABLE = True
+except ImportError:
+    pass
 
-# Local embeddings implementation
-class LocalEmbeddings:
-    def __init__(self, model_name="all-MiniLM-L6-v2"):
-        self.model = SentenceTransformer(model_name)
-    
-    def embed_documents(self, texts):
-        if isinstance(texts, str):
-            texts = [texts]
-        return self.model.encode(texts).tolist()
-    
-    def embed_query(self, text):
-        return self.model.encode(text).tolist()
 
-# Memory singleton manager
+# Simple fallback memory store for when mem0 is not available
+class SimpleMemoryStore:
+    """Simple in-memory store for basic memory functionality."""
+    def __init__(self):
+        self.memories: List[Dict[str, Any]] = []
+        self.next_id = 1
+    
+    async def add(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        memory_id = str(self.next_id)
+        self.next_id += 1
+        
+        memory = {
+            'id': memory_id,
+            'text': content,
+            'metadata': metadata or {},
+            'timestamp': datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self.memories.append(memory)
+        return memory_id
+    
+    async def retrieve(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        # Simple text matching for retrieval
+        query_lower = query.lower()
+        matches = []
+        
+        for memory in self.memories:
+            if query_lower in memory['text'].lower():
+                matches.append(memory)
+        
+        return matches[:limit]
+    
+    async def get(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        for memory in self.memories:
+            if memory['id'] == memory_id:
+                return memory
+        return None
+
+
+# Memory manager with fallback support
 class MemoryManager:
     _instance = None
+    _simple_store = None
     
     @classmethod
-    async def get_instance(cls, 
-                          storage_path: str = "./memory_store", 
-                          api_base: str = "http://localhost:1234/v1", 
-                          model_name: str = "gpt-3.5-turbo",
-                          use_local_embeddings: bool = True,
-                          embedding_model_name: str = "all-MiniLM-L6-v2") -> AsyncMemory:
-        """Get or create a singleton AsyncMemory instance."""
-        if cls._instance is None:
-            # Create embedding model (local or API-based)
-            if use_local_embeddings:
-                try:
+    async def get_instance(cls, **kwargs):
+        """Get memory instance (mem0 if available, otherwise simple store)."""
+        if MEM0_AVAILABLE and cls._instance is None:
+            try:
+                # Initialize mem0 with provided settings
+                storage_path = kwargs.get('storage_path', './memory_store')
+                api_base = kwargs.get('api_base', 'http://localhost:1234/v1')
+                model_name = kwargs.get('model_name', 'gpt-3.5-turbo')
+                use_local_embeddings = kwargs.get('use_local_embeddings', True)
+                embedding_model_name = kwargs.get('embedding_model_name', 'all-MiniLM-L6-v2')
+                
+                if use_local_embeddings and SENTENCE_TRANSFORMERS_AVAILABLE:
+                    # Use local embeddings
+                    from .embedding_tools import LocalEmbeddings
                     embedding_model = CustomEmbeddingModel(LocalEmbeddings(embedding_model_name))
-                except (ImportError, NameError):
-                    print("Warning: sentence-transformers not installed. Falling back to API embeddings.")
+                else:
+                    # Use OpenAI embeddings via LM Studio
                     embedding_model = OpenAIEmbeddingModel(
                         model_name="text-embedding-ada-002",
                         api_key="not-needed",
                         api_base=api_base
                     )
-            else:
-                embedding_model = OpenAIEmbeddingModel(
-                    model_name="text-embedding-ada-002",
-                    api_key="not-needed",
+                
+                llm = OpenAILLM(
+                    model_name=model_name,
+                    api_key="not-needed", 
                     api_base=api_base
                 )
-            
-            # Configure LLM for LM Studio
-            llm = OpenAILLM(
-                model_name=model_name,
-                api_key="not-needed",
-                api_base=api_base
-            )
-            
-            # Create directory if it doesn't exist
-            os.makedirs(storage_path, exist_ok=True)
-            
-            # Initialize the memory with async support
-            cls._instance = AsyncMemory(
-                embedding_model=embedding_model,
-                llm=llm,
-                storage_path=storage_path
-            )
+                
+                os.makedirs(storage_path, exist_ok=True)
+                
+                cls._instance = AsyncMemory(
+                    embedding_model=embedding_model,
+                    llm=llm,
+                    storage_path=storage_path
+                )
+            except Exception:
+                # Fall back to simple store if mem0 fails
+                pass
         
-        return cls._instance
+        if cls._instance is not None:
+            return cls._instance
+        
+        # Use simple fallback store
+        if cls._simple_store is None:
+            cls._simple_store = SimpleMemoryStore()
+        return cls._simple_store
+
 
 # Tool implementation functions
 async def mem0_add(content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-    """Add a memory to mem0."""
-    # Auto-add timestamp if not provided
-    if metadata is None:
-        metadata = {}
-    
-    if 'timestamp' not in metadata:
-        metadata['timestamp'] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Get memory instance
-    memory = await MemoryManager.get_instance()
-    
-    # Add the memory
-    memory_id = await memory.add(content, metadata=metadata)
-    
-    return f"Memory added with ID {memory_id}: {content[:50]}..." if len(content) > 50 else f"Memory added with ID {memory_id}: {content}"
+    """Add a memory to the memory system."""
+    try:
+        memory = await MemoryManager.get_instance()
+        memory_id = await memory.add(content, metadata=metadata)
+        return f"Memory added with ID {memory_id}: {content[:50]}..." if len(content) > 50 else f"Memory added with ID {memory_id}: {content}"
+    except Exception as e:
+        return f"Error adding memory: {str(e)}"
+
 
 async def mem0_retrieve(query: str, limit: int = 5) -> str:
     """Retrieve relevant memories based on a query."""
-    memory = await MemoryManager.get_instance()
-    memories = await memory.retrieve(query, limit=limit)
-    
-    # Format the retrieved memories
-    if not memories:
-        return "No relevant memories found."
-    
-    result = "Retrieved memories:\n\n"
-    for i, memory in enumerate(memories):
-        timestamp = memory.get('metadata', {}).get('timestamp', 'No timestamp')
-        result += f"Memory {i+1} [{timestamp}]:\n{memory['text']}\n\n"
-    
-    return result
-
-async def mem0_retrieve_by_id(memory_id: str) -> str:
-    """Retrieve a specific memory by its ID."""
-    memory = await MemoryManager.get_instance()
-    
     try:
-        result = await memory.get(memory_id)
-        if not result:
-            return f"No memory found with ID {memory_id}."
+        memory = await MemoryManager.get_instance()
+        memories = await memory.retrieve(query, limit=limit)
         
-        timestamp = result.get('metadata', {}).get('timestamp', 'No timestamp')
-        return f"Memory [{timestamp}]:\n{result['text']}"
-    except Exception as e:
-        return f"Error retrieving memory: {str(e)}"
-
-async def mem0_summarize(query: str = "") -> str:
-    """Summarize memories, optionally filtered by a query."""
-    memory = await MemoryManager.get_instance()
-    
-    if query:
-        # If query provided, get relevant memories first
-        memories = await memory.retrieve(query)
         if not memories:
-            return "No memories found matching your query."
-        memory_texts = [m["text"] for m in memories]
-        summary = await memory.summarize(memory_texts)
-    else:
-        # Summarize all memories
-        summary = await memory.summarize_all()
-    
-    return f"Memory summary: {summary}"
-
-async def mem0_search_by_metadata(key: str, value: str, limit: int = 5) -> str:
-    """Search memories by metadata field."""
-    memory = await MemoryManager.get_instance()
-    
-    try:
-        # Get vector store directly to perform metadata filtering
-        vector_store = memory._store
-        results = await vector_store.similarity_search_with_metadata_filter(
-            query="",  # Empty query to return based on metadata only
-            metadata_filter={key: value},
-            k=limit
-        )
+            return "No relevant memories found."
         
-        if not results:
-            return f"No memories found with metadata {key}={value}."
+        result = "Retrieved memories:\n\n"
+        for i, mem in enumerate(memories):
+            timestamp = mem.get('metadata', {}).get('timestamp', mem.get('timestamp', 'No timestamp'))
+            text = mem.get('text', mem.get('content', str(mem)))
+            result += f"Memory {i+1} [{timestamp}]:\n{text}\n\n"
         
-        result_text = f"Found {len(results)} memories with {key}={value}:\n\n"
-        for i, item in enumerate(results):
-            timestamp = item.get('metadata', {}).get('timestamp', 'No timestamp')
-            result_text += f"Memory {i+1} [{timestamp}]:\n{item['text']}\n\n"
-        
-        return result_text
+        return result
     except Exception as e:
-        return f"Error searching by metadata: {str(e)}"
+        return f"Error retrieving memories: {str(e)}"
 
-async def mem0_clear() -> str:
-    """Clear all memories."""
-    memory = await MemoryManager.get_instance()
-    await memory.clear()
-    return "All memories have been cleared."
 
-async def mem0_delete(memory_id: str) -> str:
-    """Delete a specific memory by ID."""
-    memory = await MemoryManager.get_instance()
-    
-    try:
-        await memory.delete(memory_id)
-        return f"Memory {memory_id} deleted successfully."
-    except Exception as e:
-        return f"Error deleting memory: {str(e)}"
-
-async def mem0_update(memory_id: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-    """Update an existing memory."""
-    memory = await MemoryManager.get_instance()
-    
-    try:
-        # First check if memory exists
-        existing = await memory.get(memory_id)
-        if not existing:
-            return f"No memory found with ID {memory_id}."
-        
-        # If no new metadata provided, keep the existing metadata
-        if metadata is None:
-            metadata = existing.get('metadata', {})
-        
-        # Update the memory
-        await memory.update(memory_id, content, metadata)
-        return f"Memory {memory_id} updated successfully."
-    except Exception as e:
-        return f"Error updating memory: {str(e)}"
-
-async def mem0_init(storage_path: str = "./memory_store",
+async def mem0_init(storage_path: str = "./memory_store", 
                    api_base: str = "http://localhost:1234/v1",
                    model_name: str = "gpt-3.5-turbo",
                    use_local_embeddings: bool = True) -> str:
-    """Initialize or reinitialize the memory system."""
+    """Initialize the memory system with custom settings."""
     try:
-        # Force recreation of the memory instance
+        # Reset instance to force reinitialization
         MemoryManager._instance = None
-        await MemoryManager.get_instance(
+        MemoryManager._simple_store = None
+        
+        # Get new instance with provided settings
+        memory = await MemoryManager.get_instance(
             storage_path=storage_path,
             api_base=api_base,
             model_name=model_name,
             use_local_embeddings=use_local_embeddings
         )
-        return f"Memory system initialized with storage at {storage_path}, using {model_name} via {api_base}."
+        
+        if MEM0_AVAILABLE and isinstance(memory, AsyncMemory):
+            return f"Memory system initialized with mem0 at {storage_path}"
+        else:
+            return "Memory system initialized with simple fallback store (mem0 not available)"
     except Exception as e:
         return f"Error initializing memory system: {str(e)}"
 
 
-# Expose tool definitions for registry initialization
+# Export the tools (only if dependencies allow)
 DATABASE_TOOLS = [
     ToolDefinition(
         name="mem0_add",
-        description="Add a memory entry to mem0",
+        description="Add a memory to the memory system",
         parameters={
-            "content": {"type": "string", "description": "Memory text"},
+            "content": {"type": "string", "description": "Content to remember"},
             "metadata": {"type": "object", "description": "Optional metadata", "required": False},
         },
         implementation=mem0_add,
     ),
     ToolDefinition(
-        name="mem0_retrieve",
-        description="Retrieve memories matching a query",
+        name="mem0_retrieve", 
+        description="Retrieve memories based on a query",
         parameters={
             "query": {"type": "string", "description": "Search query"},
-            "limit": {"type": "integer", "description": "Number of results", "required": False},
+            "limit": {"type": "integer", "description": "Maximum results", "required": False},
         },
         implementation=mem0_retrieve,
     ),
     ToolDefinition(
-        name="mem0_retrieve_by_id",
-        description="Retrieve a memory by ID",
-        parameters={"memory_id": {"type": "string", "description": "Memory ID"}},
-        implementation=mem0_retrieve_by_id,
-    ),
-    ToolDefinition(
-        name="mem0_summarize",
-        description="Summarize stored memories",
-        parameters={"query": {"type": "string", "description": "Filter query", "required": False}},
-        implementation=mem0_summarize,
-    ),
-    ToolDefinition(
-        name="mem0_search_by_metadata",
-        description="Search memories via metadata field",
-        parameters={
-            "key": {"type": "string", "description": "Metadata key"},
-            "value": {"type": "string", "description": "Metadata value"},
-            "limit": {"type": "integer", "description": "Result limit", "required": False},
-        },
-        implementation=mem0_search_by_metadata,
-    ),
-    ToolDefinition(
-        name="mem0_clear",
-        description="Clear all memories",
-        parameters={},
-        implementation=mem0_clear,
-    ),
-    ToolDefinition(
-        name="mem0_delete",
-        description="Delete memory by ID",
-        parameters={"memory_id": {"type": "string", "description": "Memory ID"}},
-        implementation=mem0_delete,
-    ),
-    ToolDefinition(
-        name="mem0_update",
-        description="Update an existing memory entry",
-        parameters={
-            "memory_id": {"type": "string", "description": "Memory ID"},
-            "content": {"type": "string", "description": "New content"},
-            "metadata": {"type": "object", "description": "Metadata", "required": False},
-        },
-        implementation=mem0_update,
-    ),
-    ToolDefinition(
         name="mem0_init",
-        description="Initialize the mem0 system",
+        description="Initialize the memory system with custom settings",
         parameters={
             "storage_path": {"type": "string", "description": "Storage directory", "required": False},
             "api_base": {"type": "string", "description": "API base URL", "required": False},

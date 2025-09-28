@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Any, cast, Optional
 
 # Community-endorsed libraries
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 import yaml
 from rich.console import Console
 from rich.panel import Panel
@@ -63,11 +64,16 @@ class AppConfig(BaseSettings):
 
     @classmethod
     def load(cls) -> "AppConfig":
+        """Load configuration from environment variables and optional config file."""
         cfg_path = os.getenv("AYYY_CONFIG_FILE")
         if cfg_path and Path(cfg_path).exists():
-            with open(cfg_path, "r") as fh:
-                data = yaml.safe_load(fh) or {}
-            return cls(**data)
+            try:
+                with open(cfg_path, "r", encoding='utf-8') as fh:
+                    data = yaml.safe_load(fh) or {}
+                return cls(**data)
+            except (yaml.YAMLError, ValueError) as e:
+                # Log error but continue with default config
+                console.print(f"[yellow]Warning: Could not load config file {cfg_path}: {e}[/yellow]")
         return cls()
 
 class AgileToolExecutor:

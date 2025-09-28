@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from subprocess import PIPE
-
 import sys
-
 
 from .base import ToolDefinition
 
@@ -26,7 +24,6 @@ async def run_command(command: str, timeout: int = 20) -> str:
     if err:
         output += f"\nERR: {err}"
     return output or "No output"
-
 
 
 async def run_python(code: str, timeout: int = 20) -> str:
@@ -60,8 +57,7 @@ SYSTEM_TOOLS = [
             "timeout": {"type": "integer", "description": "Seconds before timeout", "required": False},
         },
         implementation=run_command,
-    )
-    ,
+    ),
     ToolDefinition(
         name="run_python",
         description="Execute Python code and return its output",
@@ -70,5 +66,5 @@ SYSTEM_TOOLS = [
             "timeout": {"type": "integer", "description": "Seconds before timeout", "required": False},
         },
         implementation=run_python,
-    )
-
+    ),
+]
