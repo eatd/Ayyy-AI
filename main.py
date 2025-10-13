@@ -20,7 +20,7 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
 )
 
-# Local project imports (assuming this script is in Ayyy-AI directory or Ayyy-AI is in PYTHONPATH)
+# Local project imports
 from tools import initialize_tool_registry
 from conversation_store import load_history, save_history
 from utils import get_logger
@@ -79,21 +79,15 @@ class AgileToolExecutor:
 
     @property
     def tool_schemas(self) -> List[ChatCompletionToolParam]:
-        """Get OpenAI-compatible tool schemas."""
-        # The schema from ToolRegistry.get_lm_studio_schemas() should be compatible.
         return cast(List[ChatCompletionToolParam], self.registry.get_lm_studio_schemas())
 
     async def run_tool(self, tool_name: str, tool_args_json_str: str) -> Dict[str, Any]:
-        """Execute a tool with JSON string arguments, returning a JSON-serializable dict."""
         console.log(f"Attempting tool: [bold magenta]{tool_name}[/bold magenta], Args: [yellow]{tool_args_json_str}[/yellow]")
         try:
             args = json.loads(tool_args_json_str)
-            if not isinstance(args, dict): # Ensure args is a dict for **args unpacking
+            if not isinstance(args, dict):
                 raise ValueError("Tool arguments must be a JSON object (dictionary).")
             result = await self.registry.execute(tool_name, **args)
-            # Tools should ideally return JSON-serializable results.
-            # If a tool returns complex objects, they need a to_dict() or similar method,
-            # or this part needs to handle serialization more robustly.
             return {"status": "success", "result": result}
         except json.JSONDecodeError as e:
             console.log(f"[Tool Error] Invalid JSON for {tool_name}: {e}", style="bold red")
@@ -125,28 +119,25 @@ class ModernChatAssistant:
             })
             save_history(self.config.history_file, self.messages)
         
-        # New state variables for planning
         self.global_objective: str | None = None
         self.current_plan: List[Dict[str, Any]] | None = None
         self.current_step_index: int = 0
-        self.pending_error_info: Optional[Dict[str, Any]] = None # For handling tool errors
+        self.pending_error_info: Optional[Dict[str, Any]] = None
 
     def _save_history(self) -> None:
         save_history(self.config.history_file, self.messages)
-        
-        
+
     async def _get_llm_response(self, messages_override: List[Dict[str, Any]] | None = None, *, stream: bool = False) -> ChatCompletionMessage | None:
         tool_schemas = self.tool_executor.tool_schemas
-        
         messages_to_send = messages_override if messages_override is not None else self.messages
-        
+
         api_params: Dict[str, Any] = {
             "model": self.config.model,
             "messages": cast(List[ChatCompletionMessageParam], messages_to_send),
         }
         if tool_schemas:
             api_params["tools"] = tool_schemas
-            api_params["tool_choice"] = "auto" # Let the LLM decide
+            api_params["tool_choice"] = "auto"
 
         try:
             if stream:
@@ -184,16 +175,12 @@ class ModernChatAssistant:
         self.messages.append({"role": "user", "content": user_input})
         self._save_history()
         self.global_objective = user_input
-        
-        # For a new user turn, always reset the plan.
-        # pending_error_info is managed within the loop or cleared at the end of the turn.
         self.current_plan = None
         self.current_step_index = 0
 
-        # Main loop for planning and execution
         while True:
             current_llm_messages_for_api_call = list(self.messages)
-            was_handling_pending_error = False # Flag to know if this iteration was for error handling
+            was_handling_pending_error = False
 
             if self.pending_error_info:
                 was_handling_pending_error = True
@@ -213,7 +200,6 @@ class ModernChatAssistant:
                     "role": "system", "content": error_handling_prompt
                 })
                 console.print(Panel(error_handling_prompt, title="[bold red]Requesting LLM Guidance on Tool Error[/bold red]", expand=False))
-                # We will clear pending_error_info if the LLM successfully handles it (new plan, successful tool call, or textual ack)
 
             elif self.current_plan and self.current_step_index < len(self.current_plan):
                 current_step = self.current_plan[self.current_step_index]
@@ -229,12 +215,16 @@ class ModernChatAssistant:
                                "If using a tool, provide the precise tool call. If not, provide the answer for this step."})
             elif self.current_plan and self.current_step_index >= len(self.current_plan):
                 console.print("[bold green]Plan execution fully complete.[/bold green]")
-                self.pending_error_info = None # Plan complete, clear any error resolved to get here.
+                self.pending_error_info = None
                 break
-            else: # No plan yet
+            else:
                 console.print("[bold blue]No active plan. LLM will decide on action (generate plan, use tool, or respond).[/bold blue]")
 
             stream_mode = True
+            is_multimodal = any(isinstance(m.get("content"), list) for m in current_llm_messages_for_api_call)
+            if is_multimodal:
+                stream_mode = False
+
             llm_response_message = await self._get_llm_response(messages_override=current_llm_messages_for_api_call, stream=stream_mode)
 
             if llm_response_message is None:
@@ -258,7 +248,6 @@ class ModernChatAssistant:
                     if plan_json_str:
                         parsed_content = json.loads(plan_json_str)
                         if isinstance(parsed_content, dict) and "plan" in parsed_content and isinstance(parsed_content["plan"], list):
-                            # Clean and deduplicate plan steps
                             seen = set()
                             cleaned_plan = []
                             for step in parsed_content["plan"]:
@@ -269,9 +258,7 @@ class ModernChatAssistant:
                                     continue
                                 seen.add(key)
                                 cleaned_plan.append(step)
-                            is_valid_plan = bool(cleaned_plan)
-                            if is_valid_plan:
-                                # Show the adopted plan in full, as JSON, for user transparency
+                            if cleaned_plan:
                                 console.print(Panel(
                                     json.dumps({"plan": cleaned_plan}, indent=2),
                                     title="[bold blue]New/Revised Plan Received and Adopted[/bold blue]",
@@ -284,12 +271,8 @@ class ModernChatAssistant:
                                 assistant_message_for_history["content"] = "Okay, I have a new plan. I will now proceed with its execution."
                                 assistant_message_for_history.pop("tool_calls", None)
                                 llm_response_message.tool_calls = None
-                            elif not parsed_content["plan"]:
-                                console.print("[Plan Parsing] LLM proposed an empty plan.", style="yellow")
-                            else:
-                                console.print("[Plan Parsing] LLM proposed a plan, but it has an invalid structure.", style="yellow")
-                except json.JSONDecodeError: pass
-                except Exception as e: console.print(f"[Plan Parsing Error during adoption] {e}", style="bold red")
+                except (json.JSONDecodeError, Exception) as e:
+                    console.print(f"[Plan Parsing Error] {e}", style="yellow")
 
             if llm_response_message.tool_calls:
                 assistant_message_for_history["tool_calls"] = [
@@ -301,7 +284,6 @@ class ModernChatAssistant:
 
             if assistant_message_for_history["content"] and not stream_mode:
                 console.print(f"[Assistant Response] {assistant_message_for_history['content']}", style="bold green")
-
 
             if llm_response_message.tool_calls:
                 console.print("[bold yellow]Tool Calls Detected:[/bold yellow]")
@@ -316,85 +298,74 @@ class ModernChatAssistant:
                     tool_output_dict = await self.tool_executor.run_tool(tool_name, tool_args_json_str)
                     
                     tool_content_for_history: str
-                    if tool_output_dict.get("status") == "error":
+
+                    result = tool_output_dict.get("result", {})
+                    if isinstance(result, dict) and result.get("type") == "image_analysis":
+                        image_base64 = result.get("image_base64")
+                        last_user_message = next((m for m in reversed(self.messages) if m["role"] == "user"), None)
+                        if last_user_message and image_base64:
+                            # Attach image to the most recent user message
+                            last_user_message["content"] = [
+                                {"type": "text", "text": last_user_message["content"]},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/png;base64,{image_base64}"},
+                                },
+                            ]
+                            tool_content_for_history = "Image attached to user message. The assistant will now analyze it."
+                            console.print("[bold yellow]Image data attached to the last user message.[/bold yellow]")
+                        else:
+                            tool_content_for_history = "Image analysis failed: Could not find user message to attach to."
+                            all_tool_calls_successful_this_round = False
+                    elif tool_output_dict.get("status") == "error":
                         error_msg = tool_output_dict['message']
-                        console.print(f"[Tool Error] {tool_name} failed: {error_msg}", style="bold red")
                         tool_content_for_history = f"Error: {error_msg}"
                         all_tool_calls_successful_this_round = False
-                        
-                        current_step_goal = "N/A"
-                        if self.current_plan and self.current_step_index < len(self.current_plan): # If error in a plan step
-                            current_step_goal = self.current_plan[self.current_step_index].get("goal", "Goal not specified")
-                        elif was_handling_pending_error and self.pending_error_info : # If error happened during error recovery
-                             current_step_goal = self.pending_error_info.get("step_goal", "N/A during error recovery")
-                        
-                        self.pending_error_info = { # Set/overwrite pending error
-                            "tool_name": tool_name, "step_goal": current_step_goal,
-                            "error_message": error_msg, "arguments": tool_args_json_str}
-                        tool_message_batch_for_history.append({ # Add failed tool's result
-                            "role": "tool", "tool_call_id": tool_call_id, "content": tool_content_for_history})
-                        break # Break from processing further tools in this batch
-                    else: # Tool success
-                        if was_handling_pending_error: # Tool called to recover from error succeeded
-                            self.pending_error_info = None # Clear the error that was being handled.
-                        console.print(f"[Tool Output] {tool_name} (ID: {tool_call_id}): {json.dumps(tool_output_dict)}", style="bold green")
+                        self.pending_error_info = {"tool_name": tool_name, "step_goal": "N/A", "error_message": error_msg, "arguments": tool_args_json_str}
+                        tool_message_batch_for_history.append({"role": "tool", "tool_call_id": tool_call_id, "content": tool_content_for_history})
+                        break
+                    else:
                         tool_content_for_history = json.dumps(tool_output_dict)
-                
+
                     tool_message_batch_for_history.append({
                         "role": "tool", "tool_call_id": tool_call_id, "content": tool_content_for_history})
                 
                 self.messages.extend(tool_message_batch_for_history)
                 self._save_history()
 
-                if not all_tool_calls_successful_this_round and self.pending_error_info:
-                    console.print("[bold red]Tool call failed. Will ask LLM for guidance in the next iteration.[/bold red]")
+                if not all_tool_calls_successful_this_round:
                     continue
 
                 if all_tool_calls_successful_this_round:
-                    self.pending_error_info = None # All tools in this round were successful.
+                    self.pending_error_info = None
                     if self.current_plan:
                         self.current_step_index += 1
                         if self.current_step_index >= len(self.current_plan):
-                            console.print("[bold green]Plan execution complete after successful tool calls.[/bold green]")
                             break
                         else:
-                            console.print(f"[bold blue]Moving to plan step {self.current_step_index + 1}...[/bold blue]")
                             continue
-                    else: # Successful tools, but not part of a plan. Loop for LLM to process results.
+                    else:
+                        # Continue the loop to let the LLM process the tool results (including the image)
                         continue
-            else: # No tool calls made by the assistant in this round (i.e., textual response)
+            else:
                 if was_handling_pending_error and not new_plan_adopted_this_iteration:
-                    # LLM responded textually to an error prompt, and didn't make a new plan.
-                    # Assume the textual response is the resolution or statement it can't be resolved.
                     self.pending_error_info = None
-                    console.print("[bold yellow]LLM provided a textual response to the error. Assuming error handled or cannot be resolved.[/bold yellow]")
-                    if self.current_plan: # If the error was related to a plan step, advance it.
-                         console.print(f"[bold blue]Advancing plan step {self.current_step_index + 1} after textual error resolution.[/bold blue]")
+                    if self.current_plan:
                          self.current_step_index +=1
 
                 if self.current_plan:
-                    if not new_plan_adopted_this_iteration and not (was_handling_pending_error and self.current_step_index < len(self.current_plan)):
-                        # If not a new plan, and not an error being textually resolved for a plan step (that's handled above by advancing)
-                        # then it's a normal textual response for a plan step.
-                        console.print(f"[bold blue]Plan step {self.current_step_index + 1} considered handled by LLM's textual response or no tool needed.[/bold blue]")
+                    if not new_plan_adopted_this_iteration:
                         self.current_step_index += 1
                     
                     if self.current_step_index >= len(self.current_plan):
-                        console.print("[bold green]Plan execution complete (textual response).[/bold green]")
-                        self.pending_error_info = None # Plan complete
                         break
                     else:
-                        # If a new plan was just adopted, current_step_index is 0.
-                        # Or if an error was handled textually and step advanced.
-                        # Or if a normal step was handled textually and step advanced.
-                        console.print(f"[bold blue]Proceeding with plan (next step: {self.current_step_index + 1})...[/bold blue]")
                         continue
-                else: # No plan, no tools, simple turn is complete.
-                    self.pending_error_info = None # Turn complete
+                else:
                     break
         
         self.global_objective = None
-        self.pending_error_info = None # Final cleanup at the end of the entire turn processing.
+        self.pending_error_info = None
         self._save_history()
 
     async def run_interactive_session(self):
@@ -407,7 +378,6 @@ class ModernChatAssistant:
 
         while True:
             try:
-                # Using asyncio.to_thread for synchronous input in async context
                 user_text = await asyncio.to_thread(console.input, "[bold cyan]You: [/bold cyan]")
                 user_text_cleaned = user_text.strip()
 
@@ -425,15 +395,12 @@ class ModernChatAssistant:
             except Exception as e:
                 console.print(f"[Critical Loop Error] An unexpected error occurred: {e}", style="bold red")
                 console.print("You might need to restart the assistant.", style="yellow")
-                # Depending on severity, might break or try to recover
                 break
 
 async def main_async():
     try:
         app_config = AppConfig.load()
-        logger.info("Configuration loaded")
-        # console.print(Panel(app_config.model_dump_json(indent=2), title="[bold green]Configuration[/bold green]"))
-    except Exception as e: # Catch Pydantic validation errors if any
+    except Exception as e:
         console.print(f"[Config Error] Could not load configuration: {e}", style="bold red")
         return
 
